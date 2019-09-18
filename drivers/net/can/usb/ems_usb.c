@@ -16,11 +16,13 @@
  * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+#include <linux/init.h>
 #include <linux/signal.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/usb.h>
+#include <linux/time.h>
 
 #include <linux/can.h>
 #include <linux/can/dev.h>
@@ -30,6 +32,9 @@ MODULE_AUTHOR("Sebastian Haas <haas@ems-wuensche.com>");
 MODULE_DESCRIPTION("CAN driver for EMS Dr. Thomas Wuensche CAN/USB interfaces");
 MODULE_LICENSE("GPL v2");
 
+static unsigned int debug = 1;
+module_param(debug,int,0644);
+MODULE_PARM_DESC(debug,"debug == 0:close debug info print; debug == 1: open debug info print");
 /* Control-Values for CPC_Control() Command Subject Selection */
 #define CONTR_CAN_MESSAGE 0x04
 #define CONTR_CAN_STATE   0x0C
@@ -87,9 +92,9 @@ MODULE_LICENSE("GPL v2");
 #define CPC_CAN_MSG_MIN_SIZE 5
 
 /* Define these values to match your devices */
-#define USB_CPCUSB_VENDOR_ID 0x12D6
+#define USB_CPCUSB_VENDOR_ID 0xFFF0 //0x12D6
 
-#define USB_CPCUSB_ARM7_PRODUCT_ID 0x0444
+#define USB_CPCUSB_ARM7_PRODUCT_ID 0xFFF0 //0x0444
 
 /* Mode register NXP LPC2119/SJA1000 CAN Controller */
 #define SJA1000_MOD_NORMAL 0x00
@@ -104,9 +109,30 @@ MODULE_LICENSE("GPL v2");
 #define SJA1000_ECC_STUFF 0x80
 #define SJA1000_ECC_MASK  0xc0
 
+
+/////////////////////////////////////
+/* Error register content of STM32*/
+////////////////////////////////////
+#define STM32_LEC_DOM_BIT  0x50
+#define STM32_LEC_REC_BIT  0x40
+#define STM32_LEC_FORM     0x20
+#define STM32_LEC_STUFF    0x10
+#define STM32_LEC_ACK      0x30
+#define STM32_LEC_MASK     0x70
+
 /* Status register content */
 #define SJA1000_SR_BS 0x80
 #define SJA1000_SR_ES 0x40
+
+
+///////////////////////////////////////////////////////////
+/* Status register content of STM32*/
+///////////////////////////////////////////////////////////
+#define STM32_ESR_EWGF 0x01	//error and warning(Error count < 128)
+
+#define STM32_ESR_EPVF 0x02	//passive(Error count < 256)
+#define STM32_ESR_BOFF 0x04	//bus off(Error count >= 256)
+
 
 #define SJA1000_DEFAULT_OUTPUT_CONTROL 0xDA
 
@@ -115,24 +141,24 @@ MODULE_LICENSE("GPL v2");
  * but it expects SJA1000 bit settings based on 8MHz (is internally
  * converted).
  */
-#define EMS_USB_ARM7_CLOCK 8000000
+#define EMS_USB_ARM7_CLOCK 36000000
 
-#define CPC_TX_QUEUE_TRIGGER_LOW	25
-#define CPC_TX_QUEUE_TRIGGER_HIGH	35
+//#define CPC_TX_QUEUE_TRIGGER_LOW	25
+//#define CPC_TX_QUEUE_TRIGGER_HIGH	35
 
 /*
  * CAN-Message representation in a CPC_MSG. Message object type is
  * CPC_MSG_TYPE_CAN_FRAME or CPC_MSG_TYPE_RTR_FRAME or
  * CPC_MSG_TYPE_EXT_CAN_FRAME or CPC_MSG_TYPE_EXT_RTR_FRAME.
  */
-struct cpc_can_msg {
+struct  __attribute__ ((packed)) cpc_can_msg {
 	__le32 id;
 	u8 length;
 	u8 msg[8];
 };
 
 /* Representation of the CAN parameters for the SJA1000 controller */
-struct cpc_sja1000_params {
+struct  __attribute__ ((packed)) cpc_sja1000_params {
 	u8 mode;
 	u8 acc_code0;
 	u8 acc_code1;
@@ -142,41 +168,42 @@ struct cpc_sja1000_params {
 	u8 acc_mask1;
 	u8 acc_mask2;
 	u8 acc_mask3;
-	u8 btr0;
-	u8 btr1;
+	u8 bs1;
+	u8 bs2;
+	u16 brp;
 	u8 outp_contr;
 };
 
 /* CAN params message representation */
-struct cpc_can_params {
+struct  __attribute__ ((packed)) cpc_can_params {
 	u8 cc_type;
 
 	/* Will support M16C CAN controller in the future */
 	union {
-		struct cpc_sja1000_params sja1000;
+		struct  __attribute__ ((packed)) cpc_sja1000_params sja1000;
 	} cc_params;
 };
 
 /* Structure for confirmed message handling */
-struct cpc_confirm {
+struct  __attribute__ ((packed)) cpc_confirm {
 	u8 error; /* error code */
 };
 
 /* Structure for overrun conditions */
-struct cpc_overrun {
+struct  __attribute__ ((packed)) cpc_overrun {
 	u8 event;
 	u8 count;
 };
 
 /* SJA1000 CAN errors (compatible to NXP LPC2119) */
-struct cpc_sja1000_can_error {
+struct __attribute__ ((packed)) cpc_sja1000_can_error {
 	u8 ecc;
 	u8 rxerr;
 	u8 txerr;
 };
 
 /* structure for CAN error conditions */
-struct cpc_can_error {
+struct  __attribute__ ((packed)) cpc_can_error {
 	u8 ecode;
 
 	struct {
@@ -184,7 +211,7 @@ struct cpc_can_error {
 
 		/* Other controllers may also provide error code capture regs */
 		union {
-			struct cpc_sja1000_can_error sja1000;
+			struct  __attribute__ ((packed)) cpc_sja1000_can_error sja1000;
 		} regs;
 	} cc;
 };
@@ -193,13 +220,13 @@ struct cpc_can_error {
  * Structure containing RX/TX error counter. This structure is used to request
  * the values of the CAN controllers TX and RX error counter.
  */
-struct cpc_can_err_counter {
+struct  __attribute__ ((packed)) cpc_can_err_counter {
 	u8 rx;
 	u8 tx;
 };
 
 /* Main message type used between library and application */
-struct __packed ems_cpc_msg {
+struct __attribute__ ((packed)) ems_cpc_msg {
 	u8 type;	/* type of message */
 	u8 length;	/* length of data within union 'msg' */
 	u8 msgid;	/* confirmation handle */
@@ -208,12 +235,12 @@ struct __packed ems_cpc_msg {
 
 	union {
 		u8 generic[64];
-		struct cpc_can_msg can_msg;
-		struct cpc_can_params can_params;
-		struct cpc_confirm confirmation;
-		struct cpc_overrun overrun;
-		struct cpc_can_error error;
-		struct cpc_can_err_counter err_counter;
+		struct  __attribute__ ((packed)) cpc_can_msg can_msg;
+		struct  __attribute__ ((packed)) cpc_can_params can_params;
+		struct  __attribute__ ((packed)) cpc_confirm confirmation;
+		struct  __attribute__ ((packed)) cpc_overrun overrun;
+		struct  __attribute__ ((packed)) cpc_can_error error;
+		struct  __attribute__ ((packed)) cpc_can_err_counter err_counter;
 		u8 can_state;
 	} msg;
 };
@@ -247,7 +274,7 @@ struct ems_tx_urb_context {
 
 struct ems_usb {
 	struct can_priv can; /* must be the first member */
-
+	int open_time;
 	struct sk_buff *echo_skb[MAX_TX_URBS];
 
 	struct usb_device *udev;
@@ -274,16 +301,17 @@ static void ems_usb_read_interrupt_callback(struct urb *urb)
 	struct ems_usb *dev = urb->context;
 	struct net_device *netdev = dev->netdev;
 	int err;
+	//printk("@@@ ems_usb_read_interrupt_callback\n");
 
 	if (!netif_device_present(netdev))
 		return;
-
+	//printk("@@@ urb->status is %d\n",urb->status);
 	switch (urb->status) {
 	case 0:
 		dev->free_slots = dev->intr_in_buffer[1];
-		if (dev->free_slots > CPC_TX_QUEUE_TRIGGER_HIGH &&
-		    netif_queue_stopped(netdev))
-			netif_wake_queue(netdev);
+	//	if (dev->free_slots > CPC_TX_QUEUE_TRIGGER_HIGH &&
+	//	    netif_queue_stopped(netdev))
+	//		netif_wake_queue(netdev);
 		break;
 
 	case -ECONNRESET: /* unlink */
@@ -350,18 +378,21 @@ static void ems_usb_rx_err(struct ems_usb *dev, struct ems_cpc_msg *msg)
 	if (msg->type == CPC_MSG_TYPE_CAN_STATE) {
 		u8 state = msg->msg.can_state;
 
-		if (state & SJA1000_SR_BS) {
+		if (state & STM32_ESR_BOFF) {
 			dev->can.state = CAN_STATE_BUS_OFF;
 			cf->can_id |= CAN_ERR_BUSOFF;
 
 			dev->can.can_stats.bus_off++;
 			can_bus_off(dev->netdev);
-		} else if (state & SJA1000_SR_ES) {
+		} else if (state & STM32_ESR_EPVF){
+			dev->can.state = CAN_STATE_ERROR_PASSIVE;
+			dev->can.can_stats.error_passive++;
+		} else if (state & STM32_ESR_EWGF)  {
 			dev->can.state = CAN_STATE_ERROR_WARNING;
 			dev->can.can_stats.error_warning++;
 		} else {
 			dev->can.state = CAN_STATE_ERROR_ACTIVE;
-			dev->can.can_stats.error_passive++;
+			
 		}
 	} else if (msg->type == CPC_MSG_TYPE_CAN_FRAME_ERROR) {
 		u8 ecc = msg->msg.error.cc.regs.sja1000.ecc;
@@ -374,41 +405,58 @@ static void ems_usb_rx_err(struct ems_usb *dev, struct ems_cpc_msg *msg)
 
 		cf->can_id |= CAN_ERR_PROT | CAN_ERR_BUSERROR;
 
-		switch (ecc & SJA1000_ECC_MASK) {
-		case SJA1000_ECC_BIT:
-			cf->data[2] |= CAN_ERR_PROT_BIT;
+		switch (ecc & STM32_LEC_MASK) {
+		case STM32_LEC_DOM_BIT:
+			cf->data[2] |= CAN_ERR_PROT_BIT0;
+		        break;
+		case STM32_LEC_REC_BIT:
+			cf->data[2] |= CAN_ERR_PROT_BIT1;
 			break;
-		case SJA1000_ECC_FORM:
+		case STM32_LEC_FORM:
 			cf->data[2] |= CAN_ERR_PROT_FORM;
 			break;
-		case SJA1000_ECC_STUFF:
+		case STM32_LEC_STUFF:
 			cf->data[2] |= CAN_ERR_PROT_STUFF;
 			break;
+		case STM32_LEC_ACK:
+			cf->can_id |= CAN_ERR_ACK;
+			break;
 		default:
-			cf->data[3] = ecc & SJA1000_ECC_SEG;
+			cf->data[2] |= CAN_ERR_PROT_UNSPEC;
 			break;
 		}
 
 		/* Error occurred during transmission? */
-		if ((ecc & SJA1000_ECC_DIR) == 0)
-			cf->data[2] |= CAN_ERR_PROT_TX;
+		//if ((ecc & SJA1000_ECC_DIR) == 0)
+		//	cf->data[2] |= CAN_ERR_PROT_TX;
 
-		if (dev->can.state == CAN_STATE_ERROR_WARNING ||
-		    dev->can.state == CAN_STATE_ERROR_PASSIVE) {
-			cf->data[1] = (txerr > rxerr) ?
+		if (dev->can.state == CAN_STATE_ERROR_WARNING) {
+			cf->can_id |= CAN_ERR_CRTL;
+			cf->data[1] |= (txerr > rxerr) ?
+			    CAN_ERR_CRTL_TX_WARNING : CAN_ERR_CRTL_RX_WARNING;
+		}
+		if (dev->can.state == CAN_STATE_ERROR_PASSIVE) {
+			cf->can_id |= CAN_ERR_CRTL;
+			cf->data[1] |= (txerr > rxerr) ?
 			    CAN_ERR_CRTL_TX_PASSIVE : CAN_ERR_CRTL_RX_PASSIVE;
 		}
-	} else if (msg->type == CPC_MSG_TYPE_OVERRUN) {
+		if (dev->can.state == CAN_STATE_BUS_OFF) {
+			cf->can_id |= CAN_ERR_CRTL;
+			cf->data[1] |= CAN_ERR_CRTL_TX_OVERFLOW;
+			stats->rx_over_errors++;
+		}
+	} /*else if (msg->type == CPC_MSG_TYPE_OVERRUN) {
 		cf->can_id |= CAN_ERR_CRTL;
 		cf->data[1] = CAN_ERR_CRTL_RX_OVERFLOW;
 
 		stats->rx_over_errors++;
 		stats->rx_errors++;
-	}
 
+	}*/
+	netif_rx(skb);
 	stats->rx_packets++;
 	stats->rx_bytes += cf->can_dlc;
-	netif_rx(skb);
+	
 }
 
 /*
@@ -445,10 +493,9 @@ static void ems_usb_read_bulk_callback(struct urb *urb)
 		msg_count = ibuf[0] & ~0x80;
 
 		start = CPC_HEADER_SIZE;
-
+		
 		while (msg_count) {
 			msg = (struct ems_cpc_msg *)&ibuf[start];
-
 			switch (msg->type) {
 			case CPC_MSG_TYPE_CAN_STATE:
 				/* Process CAN state changes */
@@ -484,7 +531,7 @@ static void ems_usb_read_bulk_callback(struct urb *urb)
 	}
 
 resubmit_urb:
-	usb_fill_bulk_urb(urb, dev->udev, usb_rcvbulkpipe(dev->udev, 2),
+	usb_fill_bulk_urb(urb, dev->udev, usb_rcvbulkpipe(dev->udev, 3),
 			  urb->transfer_buffer, RX_BUFFER_SIZE,
 			  ems_usb_read_bulk_callback, dev);
 
@@ -524,7 +571,8 @@ static void ems_usb_write_bulk_callback(struct urb *urb)
 		netdev_info(netdev, "Tx URB aborted (%d)\n", urb->status);
 
 	netif_trans_update(netdev);
-
+	// netdev->trans_start = jiffies;  //Tbao
+	
 	/* transmission complete interrupt */
 	netdev->stats.tx_packets++;
 	netdev->stats.tx_bytes += context->dlc;
@@ -533,7 +581,9 @@ static void ems_usb_write_bulk_callback(struct urb *urb)
 
 	/* Release context */
 	context->echo_index = MAX_TX_URBS;
-
+	
+	if (netif_queue_stopped(netdev))
+	netif_wake_queue(netdev);
 }
 
 /*
@@ -542,7 +592,9 @@ static void ems_usb_write_bulk_callback(struct urb *urb)
 static int ems_usb_command_msg(struct ems_usb *dev, struct ems_cpc_msg *msg)
 {
 	int actual_length;
-
+	///////////
+	int retval;
+	///////////
 	/* Copy payload */
 	memcpy(&dev->tx_msg_buffer[CPC_HEADER_SIZE], msg,
 	       msg->length + CPC_MSG_HEADER_LEN);
@@ -550,10 +602,23 @@ static int ems_usb_command_msg(struct ems_usb *dev, struct ems_cpc_msg *msg)
 	/* Clear header */
 	memset(&dev->tx_msg_buffer[0], 0, CPC_HEADER_SIZE);
 
-	return usb_bulk_msg(dev->udev, usb_sndbulkpipe(dev->udev, 2),
+	retval = usb_bulk_msg(dev->udev, usb_sndbulkpipe(dev->udev, 2),
 			    &dev->tx_msg_buffer[0],
 			    msg->length + CPC_MSG_HEADER_LEN + CPC_HEADER_SIZE,
 			    &actual_length, 1000);
+	int count = 0;
+	if(debug){
+		if(retval)
+			printk("Send Command Messages Failed!\n");
+		else{
+			printk("Send Command Messages(size=%d):\n", (msg->length + CPC_MSG_HEADER_LEN + CPC_HEADER_SIZE));
+			for(count = 0; count < (msg->length + CPC_MSG_HEADER_LEN + CPC_HEADER_SIZE); count++){
+				printk("0x%x  ",dev->tx_msg_buffer[count]);
+			}
+			printk("\n");
+		}
+	}
+	return retval;
 }
 
 /*
@@ -593,7 +658,7 @@ static int ems_usb_start(struct ems_usb *dev)
 	int err, i;
 
 	dev->intr_in_buffer[0] = 0;
-	dev->free_slots = 50; /* initial size */
+	dev->free_slots = 15; /* initial size */
 
 	for (i = 0; i < MAX_RX_URBS; i++) {
 		struct urb *urb = NULL;
@@ -602,8 +667,8 @@ static int ems_usb_start(struct ems_usb *dev)
 		/* create a URB, and a buffer for it */
 		urb = usb_alloc_urb(0, GFP_KERNEL);
 		if (!urb) {
-			err = -ENOMEM;
-			break;
+			netdev_err(netdev, "#### No memory left for URBs\n");
+			return -ENOMEM;
 		}
 
 		buf = usb_alloc_coherent(dev->udev, RX_BUFFER_SIZE, GFP_KERNEL,
@@ -611,22 +676,26 @@ static int ems_usb_start(struct ems_usb *dev)
 		if (!buf) {
 			netdev_err(netdev, "No memory left for USB buffer\n");
 			usb_free_urb(urb);
-			err = -ENOMEM;
-			break;
+			return -ENOMEM;
 		}
 
-		usb_fill_bulk_urb(urb, dev->udev, usb_rcvbulkpipe(dev->udev, 2),
+		usb_fill_bulk_urb(urb, dev->udev, usb_rcvbulkpipe(dev->udev, 3),
 				  buf, RX_BUFFER_SIZE,
 				  ems_usb_read_bulk_callback, dev);
 		urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 		usb_anchor_urb(urb, &dev->rx_submitted);
 
 		err = usb_submit_urb(urb, GFP_KERNEL);
+		if (err == -ENOENT)
+			printk("########submit read urb error code is %d\n",err);
 		if (err) {
+			if (err == -ENOENT)
+				netif_device_detach(dev->netdev);
+
 			usb_unanchor_urb(urb);
 			usb_free_coherent(dev->udev, RX_BUFFER_SIZE, buf,
 					  urb->transfer_dma);
-			usb_free_urb(urb);
+			
 			break;
 		}
 
@@ -636,7 +705,7 @@ static int ems_usb_start(struct ems_usb *dev)
 
 	/* Did we submit any URBs */
 	if (i == 0) {
-		netdev_warn(netdev, "couldn't setup read URBs\n");
+		netdev_warn(netdev, "@@@@@ couldn't setup read URBs\n");
 		return err;
 	}
 
@@ -649,11 +718,13 @@ static int ems_usb_start(struct ems_usb *dev)
 			 usb_rcvintpipe(dev->udev, 1),
 			 dev->intr_in_buffer,
 			 INTR_IN_BUFFER_SIZE,
-			 ems_usb_read_interrupt_callback, dev, 1);
+			 ems_usb_read_interrupt_callback, dev, 32);
 
 	err = usb_submit_urb(dev->intr_urb, GFP_KERNEL);
 	if (err) {
-		netdev_warn(netdev, "intr URB submit failed: %d\n", err);
+		if (err == -ENODEV)
+			netif_device_detach(dev->netdev);
+		netdev_warn(netdev, "##### intr URB submit failed: %d\n", err);
 
 		return err;
 	}
@@ -682,6 +753,8 @@ static int ems_usb_start(struct ems_usb *dev)
 	return 0;
 
 failed:
+	if (err == -ENODEV)
+			netif_device_detach(dev->netdev);
 	netdev_warn(netdev, "couldn't submit control: %d\n", err);
 
 	return err;
@@ -727,8 +800,8 @@ static int ems_usb_open(struct net_device *netdev)
 		close_candev(netdev);
 
 		return err;
-	}
-
+	}	
+		dev->open_time = jiffies;
 
 	netif_start_queue(netdev);
 
@@ -795,8 +868,8 @@ static netdev_tx_t ems_usb_start_xmit(struct sk_buff *skb, struct net_device *ne
 	 * allowed (MAX_TX_URBS).
 	 */
 	if (!context) {
-		usb_free_coherent(dev->udev, size, buf, urb->transfer_dma);
 		usb_free_urb(urb);
+		usb_free_coherent(dev->udev, size, buf, urb->transfer_dma);
 
 		netdev_warn(netdev, "couldn't find free context\n");
 
@@ -834,13 +907,24 @@ static netdev_tx_t ems_usb_start_xmit(struct sk_buff *skb, struct net_device *ne
 			stats->tx_dropped++;
 		}
 	} else {
-		netif_trans_update(netdev);
+		//netdev->trans_start = jiffies;
+			netif_trans_update(netdev);
 
 		/* Slow down tx path */
 		if (atomic_read(&dev->active_tx_urbs) >= MAX_TX_URBS ||
-		    dev->free_slots < CPC_TX_QUEUE_TRIGGER_LOW) {
+		    dev->free_slots < 5) {
 			netif_stop_queue(netdev);
 		}
+		/****************************************/
+		int count = 0;
+		if(debug){
+			printk("#### Send Data Message(Size = %d):\n",size);
+			for(count = 0; count < size ; count++){
+				printk("0x%x  ",buf[count]);	
+			}
+			printk("\n");
+		}
+		
 	}
 
 	/*
@@ -852,7 +936,8 @@ static netdev_tx_t ems_usb_start_xmit(struct sk_buff *skb, struct net_device *ne
 	return NETDEV_TX_OK;
 
 nomem:
-	dev_kfree_skb(skb);
+	if (skb)
+		dev_kfree_skb(skb);
 	stats->tx_dropped++;
 
 	return NETDEV_TX_OK;
@@ -872,7 +957,7 @@ static int ems_usb_close(struct net_device *netdev)
 		netdev_warn(netdev, "couldn't stop device");
 
 	close_candev(netdev);
-
+	dev->open_time = 0;
 	return 0;
 }
 
@@ -880,7 +965,7 @@ static const struct net_device_ops ems_usb_netdev_ops = {
 	.ndo_open = ems_usb_open,
 	.ndo_stop = ems_usb_close,
 	.ndo_start_xmit = ems_usb_start_xmit,
-	.ndo_change_mtu = can_change_mtu,
+	//.ndo_change_mtu = can_change_mtu,
 };
 
 static const struct can_bittiming_const ems_usb_bittiming_const = {
@@ -891,7 +976,7 @@ static const struct can_bittiming_const ems_usb_bittiming_const = {
 	.tseg2_max = 8,
 	.sjw_max = 4,
 	.brp_min = 1,
-	.brp_max = 64,
+	.brp_max = 1024,
 	.brp_inc = 1,
 };
 
@@ -899,6 +984,9 @@ static int ems_usb_set_mode(struct net_device *netdev, enum can_mode mode)
 {
 	struct ems_usb *dev = netdev_priv(netdev);
 
+	if (!dev->open_time)
+		return -EINVAL;
+	
 	switch (mode) {
 	case CAN_MODE_START:
 		if (ems_usb_write_mode(dev, SJA1000_MOD_NORMAL))
@@ -919,19 +1007,25 @@ static int ems_usb_set_bittiming(struct net_device *netdev)
 {
 	struct ems_usb *dev = netdev_priv(netdev);
 	struct can_bittiming *bt = &dev->can.bittiming;
-	u8 btr0, btr1;
+	u8 bs1,bs2;
+	u16 brp;
 
-	btr0 = ((bt->brp - 1) & 0x3f) | (((bt->sjw - 1) & 0x3) << 6);
-	btr1 = ((bt->prop_seg + bt->phase_seg1 - 1) & 0xf) |
-		(((bt->phase_seg2 - 1) & 0x7) << 4);
-	if (dev->can.ctrlmode & CAN_CTRLMODE_3_SAMPLES)
-		btr1 |= 0x80;
+	//btr0 = ((bt->brp - 1) & 0x3f) | (((bt->sjw - 1) & 0x3) << 6);
+	//btr1 = ((bt->prop_seg + bt->phase_seg1 - 1) & 0xf) |
+	//	(((bt->phase_seg2 - 1) & 0x7) << 4);
+	//if (dev->can.ctrlmode & CAN_CTRLMODE_3_SAMPLES)
+	//	btr1 |= 0x80;
 
-	netdev_info(netdev, "setting BTR0=0x%02x BTR1=0x%02x\n", btr0, btr1);
+	bs1 = bt->prop_seg + bt->phase_seg1 - 1;
+	bs2 = bt->phase_seg2 - 1;
+	brp = bt->brp;
 
-	dev->active_params.msg.can_params.cc_params.sja1000.btr0 = btr0;
-	dev->active_params.msg.can_params.cc_params.sja1000.btr1 = btr1;
+	netdev_info(netdev, "setting BS1=0x%02x BS2=0x%02x Brp=0x%02x\n", bs1, bs2, brp);
 
+	dev->active_params.msg.can_params.cc_params.sja1000.bs1 = bs1;
+	dev->active_params.msg.can_params.cc_params.sja1000.bs2 = bs2;
+	dev->active_params.msg.can_params.cc_params.sja1000.brp = brp;
+	
 	return ems_usb_command_msg(dev, &dev->active_params);
 }
 
@@ -958,8 +1052,9 @@ static void init_params_sja1000(struct ems_cpc_msg *msg)
 	sja1000->acc_mask2 = 0xFF;
 	sja1000->acc_mask3 = 0xFF;
 
-	sja1000->btr0 = 0;
-	sja1000->btr1 = 0;
+	sja1000->bs1 = 0;
+	sja1000->bs2 = 0;
+	sja1000->brp = 0;
 
 	sja1000->outp_contr = SJA1000_DEFAULT_OUTPUT_CONTROL;
 	sja1000->mode = SJA1000_MOD_RM;
@@ -974,10 +1069,10 @@ static int ems_usb_probe(struct usb_interface *intf,
 	struct net_device *netdev;
 	struct ems_usb *dev;
 	int i, err = -ENOMEM;
-
+	printk("############ ems_usb_probe\n");
 	netdev = alloc_candev(sizeof(struct ems_usb), MAX_TX_URBS);
 	if (!netdev) {
-		dev_err(&intf->dev, "ems_usb: Couldn't alloc candev\n");
+		printk("ems_usb: Couldn't alloc candev\n");
 		return -ENOMEM;
 	}
 
@@ -991,11 +1086,13 @@ static int ems_usb_probe(struct usb_interface *intf,
 	dev->can.bittiming_const = &ems_usb_bittiming_const;
 	dev->can.do_set_bittiming = ems_usb_set_bittiming;
 	dev->can.do_set_mode = ems_usb_set_mode;
-	dev->can.ctrlmode_supported = CAN_CTRLMODE_3_SAMPLES;
+	dev->can.ctrlmode_supported = CAN_CTRLMODE_3_SAMPLES | CAN_CTRLMODE_LOOPBACK;  
+
+	netdev->flags |= IFF_ECHO; /* we support local echo */
 
 	netdev->netdev_ops = &ems_usb_netdev_ops;
 
-	netdev->flags |= IFF_ECHO; /* we support local echo */
+	//netdev->flags |= IFF_ECHO; /* we support local echo */
 
 	init_usb_anchor(&dev->rx_submitted);
 
@@ -1028,13 +1125,15 @@ static int ems_usb_probe(struct usb_interface *intf,
 	if (err) {
 		netdev_err(netdev, "couldn't initialize controller: %d\n", err);
 		goto cleanup_tx_msg_buffer;
-	}
+	}else
+		printk("######initialize controller is ok\n");
 
 	err = register_candev(netdev);
 	if (err) {
 		netdev_err(netdev, "couldn't register CAN device: %d\n", err);
 		goto cleanup_tx_msg_buffer;
-	}
+	}else
+		printk("###### register CAN device\n");
 
 	return 0;
 
@@ -1071,8 +1170,9 @@ static void ems_usb_disconnect(struct usb_interface *intf)
 		usb_free_urb(dev->intr_urb);
 
 		kfree(dev->intr_in_buffer);
-		kfree(dev->tx_msg_buffer);
+		//kfree(dev->tx_msg_buffer);
 	}
+	printk(KERN_INFO "CPC-USB device disconnected!\n");
 }
 
 /* usb specific object needed to register this driver with the usb subsystem */
@@ -1083,4 +1183,31 @@ static struct usb_driver ems_usb_driver = {
 	.id_table = ems_usb_table,
 };
 
-module_usb_driver(ems_usb_driver);
+static int __init ems_usb_init(void)
+{
+	int err;
+
+	printk(KERN_INFO "#####CPC-USB kernel driver loaded\n");
+	/* register this driver with the USB subsystem */
+	err = usb_register(&ems_usb_driver);
+
+	if (err) {
+		printk("usb_register failed. Error number %d\n", err);
+		return err;
+	}
+
+	return 0;
+}
+
+static void __exit ems_usb_exit(void)
+{
+	
+	/* deregister this driver with the USB subsystem */
+	usb_deregister(&ems_usb_driver);
+	///////////////////
+	//printk("Schedule time is:%d\n",timediff);
+	//printk("Btr0 is %d,Btr1 is %d\n",btr0Value,btr1Value);
+	//////////////////
+}
+module_init(ems_usb_init);
+module_exit(ems_usb_exit);
