@@ -32,7 +32,7 @@ MODULE_AUTHOR("Sebastian Haas <haas@ems-wuensche.com>");
 MODULE_DESCRIPTION("CAN driver for EMS Dr. Thomas Wuensche CAN/USB interfaces");
 MODULE_LICENSE("GPL v2");
 
-static unsigned int debug = 1;
+static unsigned int debug = 0;
 module_param(debug,int,0644);
 MODULE_PARM_DESC(debug,"debug == 0:close debug info print; debug == 1: open debug info print");
 /* Control-Values for CPC_Control() Command Subject Selection */
